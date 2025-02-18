@@ -177,7 +177,7 @@ func main() {
 	flag.StringVar(&cfg.FilenameStub, "filename", "rtl433", "Output filename stub")
 	flag.DurationVar(&cfg.StaleInterval, "stale-interval", 15*time.Minute, "Stale interval")
 	labelString := flag.String("labels", "", "Labels to add to metrics")
-	rtl433cmd := flag.String("cmd", "rtl_433 -R 73 -F json -T 3600", "Command to run")
+	rtl433cmd := flag.String("cmd", "rtl_433 -R 73 -F json", "Command to run")
 	flag.Parse()
 
 	cfg.Labels = splitLabels(*labelString)
@@ -198,6 +198,7 @@ func main() {
 	if err := cmd.Start(); err != nil {
 		log.Fatalf("Error starting command: %v", err)
 	}
+	cmd.Stderr = os.Stderr
 
 	metricsPipe := make(chan SensorData)
 	wg := &sync.WaitGroup{}
@@ -207,6 +208,20 @@ func main() {
 	go sweeper(ctx, wg, cfg.NodeExporterDir, cfg.FilenameStub, cfg.StaleInterval)
 	wg.Add(1)
 	go metricsWriter(wg, cfg, metricsPipe)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer cancel()
+		if err := cmd.Wait(); err != nil {
+			if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+				log.Printf("Command exited with status %d", ws.ExitStatus())
+				log.Printf("Command exited with signal %d", ws.Signal())
+			} else {
+				log.Printf("Error waiting for command: %v", err)
+			}
+		}
+		log.Printf("command %s exited", *rtl433cmd)
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -218,10 +233,5 @@ func main() {
 	if err := cmd.Process.Kill(); err != nil {
 		log.Printf("Error killing command: %v", err)
 	}
-	if err := cmd.Wait(); err != nil {
-		ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
-		if !(ok && ws.Signaled() && (ws.Signal() == syscall.SIGTERM || ws.Signal() == syscall.SIGINT)) {
-			log.Printf("Error waiting for command: %v", err)
-		}
-	}
+
 }
